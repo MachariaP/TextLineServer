@@ -29,8 +29,8 @@ logger = logging.getLogger('stringsearchserver')
 def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
     """Parse the configuration file into a dictionary.
 
-    Reads the config file, extracting keys like 'port' and 'linuxpath', ignoring
-    irrelevant elements. Ensures 'linuxpath' is present in the expected format.
+    Reads the config file, extracting keys like 'port', 'linuxpath', and
+    'REREAD_ON_QUERY' ignoring irrelevant elements.
 
     Args:
         config_path(str): Path to the configuration file. Defaults to 'config.ini'.
@@ -54,11 +54,17 @@ def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
                 if not value:
                     raise ValueError("linuxpath is empty in configuration file")
                 result['linuxpath'] = value
+            elif key.lower() == 'reread_on_query':
+                if value.lower() not in ('true', 'false'):
+                    raise ValueError("REREAD_ON_QUERY must be 'true' or 'false'")
+                result['REREAD_ON_QUERY'] = value
             else:
                 result[key] = value
 
     if 'linuxpath' not in result:
         raise ValueError("linuxpath not found in configuration file")
+    if 'REREAD_ON_QUERY' not in result:
+        raise ValueError("REREAD_ON_QUERY not found in configuration file")
     
     return result
 
@@ -66,13 +72,14 @@ def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
 class ServerConfig:
     """Represents the server configuration.
 
-    Validates configuration settings, including the file path for string searches,
-    and loads the file into a set for fast lookups.
+    Validates configuration settings, including the file path and re-read option,
+    and loads the file into a set for fast lookups when not re-reading.
 
     Attributes:
         port (int): Port to bind the server to.
         linuxpath (Path): Path to the file for string searches.
-        file_lines (Set[str]): Set of lines from the file for exact matching.
+        reread_on_query (bool): Whether to re-read the file on each query.
+        file_lines (Set[str]): Set of lines from the file (if not re-reading).
     """
     def __init__(self, config_dict: Dict[str, str]):
         self.port = int(config_dict.get('port', 44445))
@@ -85,8 +92,11 @@ class ServerConfig:
         if not self.linuxpath.is_file():
             raise FileNotFoundError(f"File not found: {self.linuxpath}")
         
-        # Load the file into a set for fast lookups
-        self.file_lines = self._load_file()
+        # Parse the REREAD_ON_QUERY option
+        self.reread_on_query = config_dict.get('REREAD_ON_QUERY').lower() == 'true'
+        
+        # Load the file into a set only if not re-reading on query
+        self.file_lines = self._load_file() if not self.reread_on_query else set()
 
     def _load_file(self) -> Set[str]:
         """Load the file into a set of lines, stripping newlines.
@@ -101,6 +111,30 @@ class ServerConfig:
             logger.error(f"Failed to load file {self.linuxpath}: {e}")
             raise
 
+    def search_file(self, query: str) -> bool:
+        """Search for an exact string match in the file.
+
+        If re-reading is enabled, reload the file before searching.
+
+        Args:
+            query (str): The string to search for.
+
+        Returns:
+            bool: True if the string exists in the file, False otherwise.
+        """
+        if self.reread_on_query:
+            try:
+                with open(self.linuxpath, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.rstrip('\n') == query:
+                            return True
+                return False
+            except Exception as e:
+                logger.error(f"Error reading file {self.linuxpath}: {e}")
+                return False
+        else:
+            return query in self.file_lines
+
 class MyTCPHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections.
 
@@ -111,7 +145,7 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
         """Process a single client request.
 
         Receive up to 1024 bytes, strips trailing null characters, decodes as UTF-8,
-        logs the query with client IP, and sends a placeholder response.
+        search for the query in the file, logs the query, and sends the appropriate response.
         """
         try:
             # Receive data from the client (up to 1024 bytes)
