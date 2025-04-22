@@ -29,6 +29,9 @@ logger = logging.getLogger('stringsearchserver')
 def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
     """Parse the configuration file into a dictionary.
 
+    Reads the config file, extracting keys like 'port' and 'linuxpath', ignoring
+    irrelevant elements. Ensures 'linuxpath' is present in the expected format.
+
     Args:
         config_path(str): Path to the configuration file. Defaults to 'config.ini'.
 
@@ -37,19 +40,33 @@ def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
 
     Raises:
         FileNotFoundError: If the configuration file does not exist.
+        ValueError: If 'linuxpath' is missing or malformed.
     """
     config = configparser.ConfigParser()
     if not config.read(config_path):
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    
+    # Flatten the config into a single dictionary
     result = {}
     for section in config:
         for key, value in config[section].items():
-            result[key] = value
+            if key.startswith('linuxpath'):
+                if not value:
+                    raise ValueError("linuxpath is empty in configuration file")
+                result['linuxpath'] = value
+            else:
+                result[key] = value
+
+    if 'linuxpath' not in result:
+        raise ValueError("linuxpath not found in configuration file")
+    
     return result
 
 
 class ServerConfig:
     """Represents the server configuration.
+
+    Validates configuration settings, including the file path for string searches.
 
     Attributes:
         port (int): Port to bind the server to.
@@ -61,6 +78,10 @@ class ServerConfig:
         if self.linuxpath is None:
             raise ValueError("linuxpath not found in configuration file")
         self.linuxpath = Path(self.linuxpath)
+
+        # Validate that the file exists
+        if not self.linuxpath.is_file():
+            raise FileNotFoundError(f"File not found: {self.linuxpath}")
 
 class MyTCPHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections.
