@@ -4,15 +4,15 @@
 TCP server for handling concurrent connections and string queries.
 
 This module implements a TCP server that binds to a configurable port, handles
-unlimited concurrent connections using threading, and receives strings in clear
-text. It logs queries with timestamps and client IPs, preparing for future string
-search functionality.
+unlimited concurrent connections using threading, and receives strings in clear text,
+reads a file path from a configuration file, and searches for exact string matches
+in the file, responding with 'STRING EXISTS' or 'STRING NOT FOUND'.
 """
 
 import socketserver
 import configparser
 import logging
-from typing import Dict
+from typing import Dict, Set
 from pathlib import Path
 
 # Configure logging to output to console and file
@@ -66,11 +66,13 @@ def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
 class ServerConfig:
     """Represents the server configuration.
 
-    Validates configuration settings, including the file path for string searches.
+    Validates configuration settings, including the file path for string searches,
+    and loads the file into a set for fast lookups.
 
     Attributes:
         port (int): Port to bind the server to.
         linuxpath (Path): Path to the file for string searches.
+        file_lines (Set[str]): Set of lines from the file for exact matching.
     """
     def __init__(self, config_dict: Dict[str, str]):
         self.port = int(config_dict.get('port', 44445))
@@ -82,6 +84,22 @@ class ServerConfig:
         # Validate that the file exists
         if not self.linuxpath.is_file():
             raise FileNotFoundError(f"File not found: {self.linuxpath}")
+        
+        # Load the file into a set for fast lookups
+        self.file_lines = self._load_file()
+
+    def _load_file(self) -> Set[str]:
+        """Load the file into a set of lines, stripping newlines.
+
+        Returns:
+            Set[str]: Set containing each line from the file.
+        """
+        try:
+            with open(self.linuxpath, 'r', encoding='utf-8') as f:
+                return {line.rstrip('\n') for line in f if line.strip()}
+        except Exception as e:
+            logger.error(f"Failed to load file {self.linuxpath}: {e}")
+            raise
 
 class MyTCPHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections.
@@ -103,8 +121,12 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
             # Log the received query with IP and timestamp
             logger.debug(f"Received query from {self.client_address[0]}: {query}")
 
-            # Send a response back to the client
-            response = "NOT IMPLEMENTED YET\n"
+            # Search for exact match in the file
+            server = self.server  # type: MyTCPServer
+            response = ("STRING EXISTS\n" if query in server.config.file_lines
+                       else "STRING NOT FOUND\n")
+            
+            # Send the response back to the client
             self.request.sendall(response.encode('utf-8'))
         except Exception as e:
             logger.error(f"Error handling client {self.client_address}: {e}")
