@@ -1,15 +1,10 @@
-#!/usr/bin/env python3
-
-"""
-TCP server for handling concurrent connections and string queries.
+"""TCP server for handling concurrent connections and string queries.
 
 This module implements a TCP server that binds to a configurable port, handles
-unlimited concurrent connections using threading, receiving strings in clear text
-(upto 1024 bytes, stripping trailing \x00 characters), reads a file path from a
-configuration file, and searches for exact string matches in the file, with an
-option to re-read the file on each query. The server logs all queries with
-IP and timestamp, and sends a response indicating whether the string exists
-in the file.
+unlimited concurrent connections using threading, receives strings in clear text
+(up to 1024 bytes, stripping trailing \x00 characters), reads a file path from a
+configuration file, searches for exact string matches in the file, responds with
+'STRING EXISTS\n' or 'STRING NOT FOUND\n', and supports re-reading the file per query.
 """
 
 import socketserver
@@ -27,16 +22,16 @@ logging.basicConfig(
         logging.FileHandler('server.log')  # File output
     ]
 )
-logger = logging.getLogger('stringsearchserver')
+logger = logging.getLogger('StringSearchServer')
 
 def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
     """Parse the configuration file into a dictionary.
 
     Reads the config file, extracting keys like 'port', 'linuxpath', and
-    'REREAD_ON_QUERY' ignoring irrelevant elements.
+    'REREAD_ON_QUERY', ignoring irrelevant elements.
 
     Args:
-        config_path(str): Path to the configuration file. Defaults to 'config.ini'.
+        config_path (str): Path to the configuration file. Defaults to 'config.ini'.
 
     Returns:
         Dict[str, str]: Dictionary containing configuration key-value pairs.
@@ -49,7 +44,6 @@ def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
     if not config.read(config_path):
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
     
-    # Flatten the config into a single dictionary
     result = {}
     for section in config:
         for key, value in config[section].items():
@@ -59,18 +53,17 @@ def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
                 result['linuxpath'] = value
             elif key.lower() == 'reread_on_query':
                 if value.lower() not in ('true', 'false'):
-                    raise ValueError("REREAD_ON_QUERY must be 'true' or 'false'")
+                    raise ValueError("REREAD_ON_QUERY must be 'True' or 'False'")
                 result['REREAD_ON_QUERY'] = value
             else:
                 result[key] = value
-
+    
     if 'linuxpath' not in result:
         raise ValueError("linuxpath not found in configuration file")
     if 'REREAD_ON_QUERY' not in result:
         raise ValueError("REREAD_ON_QUERY not found in configuration file")
     
     return result
-
 
 class ServerConfig:
     """Represents the server configuration.
@@ -81,7 +74,7 @@ class ServerConfig:
     Attributes:
         port (int): Port to bind the server to.
         linuxpath (Path): Path to the file for string searches.
-        reread_on_query (bool): Whether to re-read the file on each query.
+        reread_on_query (bool): Whether to re-read the file for each query.
         file_lines (Set[str]): Set of lines from the file (if not re-reading).
     """
     def __init__(self, config_dict: Dict[str, str]):
@@ -90,15 +83,9 @@ class ServerConfig:
         if self.linuxpath is None:
             raise ValueError("linuxpath not found in configuration file")
         self.linuxpath = Path(self.linuxpath)
-
-        # Validate that the file exists
         if not self.linuxpath.is_file():
             raise FileNotFoundError(f"File not found: {self.linuxpath}")
-        
-        # Parse the REREAD_ON_QUERY option
         self.reread_on_query = config_dict.get('REREAD_ON_QUERY').lower() == 'true'
-        
-        # Load the file into a set only if not re-reading on query
         self.file_lines = self._load_file() if not self.reread_on_query else set()
 
     def _load_file(self) -> Set[str]:
@@ -117,13 +104,11 @@ class ServerConfig:
     def search_file(self, query: str) -> bool:
         """Search for an exact string match in the file.
 
-        If re-reading is enabled, reload the file before searching.
-
         Args:
             query (str): The string to search for.
 
         Returns:
-            bool: True if the string exists in the file, False otherwise.
+            bool: True if the query matches a line in the file, False otherwise.
         """
         if self.reread_on_query:
             try:
@@ -141,41 +126,43 @@ class ServerConfig:
 class MyTCPHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections.
 
-    Process incoming TCP connections, receives strings in clear text (up to 1024 bytes,
-    stripping trailing \x00 characters), search for exact matches in the file, and
-    respond with 'STRING EXISTS' or 'STRING NOT FOUND'.
+    Processes incoming TCP connections, receives strings in clear text (up to 1024 bytes,
+    stripping trailing \x00 characters), searches for exact matches in the file, and
+    responds with 'STRING EXISTS\n' or 'STRING NOT FOUND\n'.
     """
     def handle(self):
         """Process a single client request.
 
-        Receive up to 1024 bytes, strips trailing \x00 characters, decodes as UTF-8,
-        search for the query in the file, logs the query, and sends the appropriate response.
+        Receives up to 1024 bytes, strips trailing \x00 characters, decodes as UTF-8,
+        searches for the query in the file, logs the query and response, and sends
+        the appropriate newline-terminated response.
         """
         try:
             # Receive data from the client (up to 1024 bytes)
             data = self.request.recv(1024)
             logger.debug(f"Received payload from {self.client_address[0]}: {len(data)} bytes")
-
+            
             # Strip trailing \x00 characters
             stripped_data = data.rstrip(b'\x00')
             if len(data) != len(stripped_data):
                 logger.debug(f"Stripped {len(data) - len(stripped_data)} \\x00 characters")
-
-            # Decode the data to a string
+            
+            # Decode the query
             query = stripped_data.decode('utf-8', errors='ignore')
             logger.debug(f"Decoded query from {self.client_address[0]}: '{query}'")
-
-
+            
             # Search for exact match in the file
             server = self.server  # type: MyTCPServer
-            response = ("STRING EXISTS\n" if query in server.config.file_lines
-                       else "STRING NOT FOUND\n")
+            response = ("STRING EXISTS\n" if server.config.search_file(query)
+                        else "STRING NOT FOUND\n")
             
-            # Send the response back to the client
+            # Log the response
+            logger.debug(f"Sending response to {self.client_address[0]}: '{response}'")
+            
+            # Send response
             self.request.sendall(response.encode('utf-8'))
         except Exception as e:
             logger.error(f"Error handling client {self.client_address}: {e}")
-
 
 class MyTCPServer(socketserver.ThreadingTCPServer):
     """Custom TCP server with threading for concurrent connections.
@@ -196,7 +183,7 @@ def main():
         # Load configuration
         config_dict = parse_config()
         config = ServerConfig(config_dict)
-
+        
         # Create and start the server
         host = '127.0.0.1'  # Bind to localhost
         with MyTCPServer((host, config.port), MyTCPHandler, config) as server:
