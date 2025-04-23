@@ -4,9 +4,12 @@
 TCP server for handling concurrent connections and string queries.
 
 This module implements a TCP server that binds to a configurable port, handles
-unlimited concurrent connections using threading, and receives strings in clear text,
-reads a file path from a configuration file, and searches for exact string matches
-in the file, responding with 'STRING EXISTS' or 'STRING NOT FOUND'.
+unlimited concurrent connections using threading, receiving strings in clear text
+(upto 1024 bytes, stripping trailing \x00 characters), reads a file path from a
+configuration file, and searches for exact string matches in the file, with an
+option to re-read the file on each query. The server logs all queries with
+IP and timestamp, and sends a response indicating whether the string exists
+in the file.
 """
 
 import socketserver
@@ -40,7 +43,7 @@ def parse_config(config_path: str = 'config.ini') -> Dict[str, str]:
 
     Raises:
         FileNotFoundError: If the configuration file does not exist.
-        ValueError: If 'linuxpath' is missing or malformed.
+        ValueError: If 'linuxpath' or 'REREAD_ON_QUERY' is missing or malformed.
     """
     config = configparser.ConfigParser()
     if not config.read(config_path):
@@ -138,22 +141,30 @@ class ServerConfig:
 class MyTCPHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections.
 
-    Process incoming TCP connections, receives strings in clear text, logs queries,
-    and sends placeholder responses until search functionality is implemented.
+    Process incoming TCP connections, receives strings in clear text (up to 1024 bytes,
+    stripping trailing \x00 characters), search for exact matches in the file, and
+    respond with 'STRING EXISTS' or 'STRING NOT FOUND'.
     """
     def handle(self):
         """Process a single client request.
 
-        Receive up to 1024 bytes, strips trailing null characters, decodes as UTF-8,
+        Receive up to 1024 bytes, strips trailing \x00 characters, decodes as UTF-8,
         search for the query in the file, logs the query, and sends the appropriate response.
         """
         try:
             # Receive data from the client (up to 1024 bytes)
-            data = self.request.recv(1024).rstrip(b'\x00')
-            query = data.decode('utf-8', errors='ignore')
+            data = self.request.recv(1024)
+            logger.debug(f"Received payload from {self.client_address[0]}: {len(data)} bytes")
 
-            # Log the received query with IP and timestamp
-            logger.debug(f"Received query from {self.client_address[0]}: {query}")
+            # Strip trailing \x00 characters
+            stripped_data = data.rstrip(b'\x00')
+            if len(data) != len(stripped_data):
+                logger.debug(f"Stripped {len(data) - len(stripped_data)} \\x00 characters")
+
+            # Decode the data to a string
+            query = stripped_data.decode('utf-8', errors='ignore')
+            logger.debug(f"Decoded query from {self.client_address[0]}: '{query}'")
+
 
             # Search for exact match in the file
             server = self.server  # type: MyTCPServer

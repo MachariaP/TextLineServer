@@ -2,8 +2,8 @@
 """TCP client for querying the TextLineServer interactively.
 
 This module implements a client that connects to the TextLineServer, allows users to
-enter string queries interactively, and receives responses indicating whether the string
-exists in the server's file. Exits gracefully on Ctrl+C.
+enter string queries interactively (up to 1024 bytes including newline), and receives
+responses indicating whether the string exists in the server's file. Exits gracefully on Ctrl+C.
 """
 
 import socket
@@ -53,6 +53,7 @@ def create_connection(host: str, port: int) -> socket.socket:
     """
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5.0)
         s.connect((host, port))
         logger.info(f"Connected to {host}:{port}")
         return s
@@ -72,11 +73,17 @@ def query_server(sock: socket.socket, query: str) -> str:
 
     Raises:
         socket.error: If communication with the server fails.
+        valueError: If the query exceeds 1024 bytes after encoding.
     """
     try:
+        # Validate payload size (including newline)
+        encoded_query = f"{query}\n".encode('utf-8')
+        if len(encoded_query) > 1024:
+            raise ValueError("Query exceeds 1024 bytes: {len(encoded_query)} bytes")
+
         # Send the query to the server
-        sock.sendall(query.encode('utf-8'))
-        logger.debug(f"Sent query: '{query}'")
+        sock.sendall(encoded_query)
+        logger.debug(f"Sent query: '{query}' ({len(encoded_query)} bytes)")
 
         # Receive the response from the server (up to 1024 bytes)
         response = sock.recv(1024).decode('utf-8', errors='ignore').strip()
@@ -117,7 +124,11 @@ def main():
 
             except socket.error as e:
                 logger.error(f"Failed to recover connection: {e}")
+                sock.close()
                 break
+            except ValueError as e:
+                print(f"Error: {e}")
+                continue
 
     except KeyboardInterrupt:
         logger.info("Received Ctrl+C, shutting down...")
@@ -125,12 +136,9 @@ def main():
         logger.error(f"Client failed: {e}")
         raise
     finally:
-        # Ensure the socket is closed on exit
-        try:
+        if sock is not None:
             sock.close()
             logger.info("Connection closed.")
-        except NameError:
-            pass  # Socket not created yet
 
 
 if __name__ == "__main__":
